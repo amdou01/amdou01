@@ -49,6 +49,18 @@
   const num = (v) => parseFloat(String(v ?? '').replace(/[\s\u00a0]/g, '').replace(',', '.'));
   const shortDate = (iso) => { const d = C.parseISO(iso); return `${pad(d.getDate())}/${pad(d.getMonth() + 1)}`; };
 
+  /** Confirmation intégrée à la page (remplace confirm(), bloqué dans certains contextes). */
+  function ask(msg, okLabel = 'Confirmer') {
+    const dlg = $('#confirmDlg');
+    dlg.querySelector('p').textContent = msg;
+    dlg.querySelector('[data-ok]').textContent = okLabel;
+    dlg.returnValue = '';
+    dlg.showModal();
+    return new Promise((resolve) => {
+      dlg.onclose = () => resolve(dlg.returnValue === 'ok');
+    });
+  }
+
   function toast(msg) {
     const t = $('#toast'); t.textContent = msg; t.classList.add('show');
     clearTimeout(toast._t); toast._t = setTimeout(() => t.classList.remove('show'), 1800);
@@ -392,9 +404,11 @@
       root.querySelectorAll('[data-act]').forEach((b) => b.onclick = () => {
         const act = b.dataset.act;
         if (act === 'delete') {
-          if (!confirm('Supprimer cette transaction ?')) return;
-          state.transactions = state.transactions.filter((x) => x.id !== t.id);
-          save(); render(); closeModal(); toast('Transaction supprimée');
+          ask('Supprimer cette transaction ?', 'Supprimer').then((ok) => {
+            if (!ok) return;
+            state.transactions = state.transactions.filter((x) => x.id !== t.id);
+            save(); render(); closeModal(); toast('Transaction supprimée');
+          });
         } else if (act === 'copy') {
           const { id, createdAt, ...rest } = read(form);
           txForm({ ...rest, date: C.today() });
@@ -482,9 +496,11 @@
       if (del) del.onclick = () => {
         if (state.transactions.some((t) => t.accountId === a.id || t.toAccountId === a.id))
           return toast('Compte utilisé par des transactions : suppression impossible');
-        if (!confirm(`Supprimer le compte « ${a.name} » ?`)) return;
-        state.accounts = state.accounts.filter((x) => x.id !== a.id);
-        save(); render(); closeModal();
+        ask(`Supprimer le compte « ${a.name} » ?`, 'Supprimer').then((ok) => {
+          if (!ok) return;
+          state.accounts = state.accounts.filter((x) => x.id !== a.id);
+          save(); render(); closeModal();
+        });
       };
     });
   }
@@ -538,26 +554,39 @@
 
   // ---------- Fichiers ----------
   function download(name, content, mime) {
+    if (window.KALPE_EMBED) return showExport(name, content);
     const url = URL.createObjectURL(new Blob([content], { type: mime }));
     const a = Object.assign(document.createElement('a'), { href: url, download: name });
     document.body.appendChild(a); a.click(); a.remove();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
+  /** Version intégrée : les téléchargements sont bloqués, on affiche le contenu à copier. */
+  function showExport(name, content) {
+    openModal(name, `<p class="muted">Copiez ce contenu puis collez-le dans un fichier ${esc(name.split('.').pop().toUpperCase())}.</p>
+      <textarea id="exportText" class="search-input" rows="12" readonly>${esc(content.replace(/^\uFEFF/, ''))}</textarea>
+      <div class="actions"><button class="btn primary" type="button" id="copyExport">Copier</button></div>`, (root) => {
+      const ta = root.querySelector('#exportText');
+      root.querySelector('#copyExport').onclick = () => {
+        navigator.clipboard.writeText(ta.value).then(() => toast('Copié'), () => { ta.focus(); ta.select(); toast('Sélectionné : faites Copier'); });
+      };
+    });
+  }
+
   function restore() {
     const input = Object.assign(document.createElement('input'), { type: 'file', accept: '.json,application/json' });
     input.onchange = async () => {
       try {
         const data = JSON.parse(await input.files[0].text());
         if (!Array.isArray(data.transactions) || !Array.isArray(data.accounts)) throw new Error('format');
-        if (!confirm('Remplacer toutes les données actuelles par cette sauvegarde ?')) return;
+        if (!(await ask('Remplacer toutes les données actuelles par cette sauvegarde ?', 'Remplacer'))) return;
         state = C.migrate(data); save(); render(); toast('Sauvegarde restaurée');
       } catch { toast('Fichier de sauvegarde invalide'); }
     };
     input.click();
   }
 
-  function loadDemo() {
-    if (state.transactions.length && !confirm('Ajouter des données de démonstration aux données existantes ?')) return;
+  async function loadDemo(silent) {
+    if (!silent && state.transactions.length && !(await ask('Ajouter des données de démonstration aux données existantes ?', 'Ajouter'))) return;
     const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
     const ex = state.categories.expense, inc = state.categories.income;
     const notes = ['Déjeuner client', 'Courses', 'Taxi', 'Abonnement', 'Fournitures', 'Essence', 'Pharmacie', 'Restaurant'];
@@ -576,7 +605,7 @@
       }
     }
     state.budgets[ex[0].id] = 400; state.budgets[ex[2].id] = 150;
-    save(); render(); toast('Données de démonstration chargées');
+    save(); render(); if (!silent) toast('Données de démonstration chargées');
   }
 
   // ---------- Événements ----------
@@ -617,11 +646,13 @@
         'export-csv': () => download(`kalpe-${ui.year}-${pad(ui.month + 1)}.csv`, C.toCSV({ ...state, transactions: monthTx() }), 'text/csv;charset=utf-8'),
         'export-csv-all': () => download(`kalpe-${stamp}.csv`, C.toCSV(state), 'text/csv;charset=utf-8'),
         backup: () => download(`kalpe-sauvegarde-${stamp}.json`, JSON.stringify(state, null, 2), 'application/json'),
-        restore, demo: loadDemo, bookmarks: bookmarksModal,
+        restore, demo: () => loadDemo(false), bookmarks: bookmarksModal,
         'add-account': () => accountModal(),
         'cats-expense': () => categoriesModal('expense'),
         'cats-income': () => categoriesModal('income'),
-        reset: () => { if (confirm('Effacer définitivement toutes les données ?')) { state = C.defaultState(); save(); render(); toast('Données réinitialisées'); } },
+        reset: () => ask('Effacer définitivement toutes les données ?', 'Effacer').then((ok) => {
+          if (ok) { state = C.defaultState(); save(); render(); toast('Données réinitialisées'); }
+        }),
       })[d.action]?.();
     }
   });
@@ -641,4 +672,6 @@
   }
 
   render();
+  // Première ouverture de la version de démonstration : données d'exemple pour montrer l'outil.
+  if (window.KALPE_EMBED && !state.transactions.length) loadDemo(true);
 })();

@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#f04b4b">
+  <meta name="description" content="Kalpe — gestion des dépenses, revenus, comptes et budgets.">
+  <title>Kalpe Budget</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="src/styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <button class="icon-btn" id="prevPeriod" aria-label="Période précédente">‹</button>
+    <h1 id="periodLabel">—</h1>
+    <button class="icon-btn" id="nextPeriod" aria-label="Période suivante">›</button>
+    <div class="topbar-actions">
+      <button class="icon-btn" id="bookmarkBtn" aria-label="Favoris" title="Favoris">☆</button>
+      <button class="icon-btn" id="searchBtn" aria-label="Rechercher" title="Rechercher">⌕</button>
+    </div>
+  </header>
+
+  <!-- Onglet Transactions -->
+  <section class="view" id="view-trans">
+    <nav class="subtabs" id="transTabs">
+      <button data-tab="daily" class="active">Quotidien</button>
+      <button data-tab="calendar">Calendrier</button>
+      <button data-tab="weekly">Hebdo</button>
+      <button data-tab="monthly">Mensuel</button>
+      <button data-tab="total">Total</button>
+    </nav>
+    <div class="summary" id="transSummary"></div>
+    <div class="content" id="transContent"></div>
+  </section>
+
+  <!-- Onglet Statistiques -->
+  <section class="view hidden" id="view-stats">
+    <nav class="subtabs" id="statsTabs">
+      <button data-tab="expense" class="active">Dépenses</button>
+      <button data-tab="income">Revenus</button>
+      <button data-tab="budget">Budget</button>
+    </nav>
+    <div class="content" id="statsContent"></div>
+  </section>
+
+  <!-- Onglet Comptes -->
+  <section class="view hidden" id="view-accounts">
+    <div class="summary" id="accSummary"></div>
+    <div class="content" id="accContent"></div>
+  </section>
+
+  <!-- Onglet Plus -->
+  <section class="view hidden" id="view-more">
+    <div class="content" id="moreContent"></div>
+  </section>
+
+  <button class="fab" id="addBtn" aria-label="Ajouter une transaction">+</button>
+
+  <nav class="bottomnav" id="bottomNav">
+    <button data-view="trans" class="active"><span>📒</span>Transactions</button>
+    <button data-view="stats"><span>📊</span>Stats</button>
+    <button data-view="accounts"><span>💳</span>Comptes</button>
+    <button data-view="more"><span>⋯</span>Plus</button>
+  </nav>
+
+  <dialog id="modal"><div id="modalBody"></div></dialog>
+  <div class="toast" id="toast" role="status"></div>
+
+  <script src="src/core.js"></script>
+  <script src="src/app.js"></script>
+</body>
+</html>

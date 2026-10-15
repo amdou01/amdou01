@@ -1,0 +1,14 @@
+{
+  "name": "Kalpe Budget",
+  "short_name": "Kalpe",
+  "description": "Gestion des dépenses, revenus, comptes et budgets.",
+  "lang": "fr",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#f4f4f6",
+  "theme_color": "#f04b4b",
+  "icons": [
+    { "src": "icons/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}

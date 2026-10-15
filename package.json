@@ -1,0 +1,10 @@
+{
+  "name": "kalpe-budget",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Application de gestion budgétaire inspirée de Money Manager (Realbyte).",
+  "scripts": {
+    "test": "node --test tests/*.test.js",
+    "start": "python3 -m http.server 8080"
+  }
+}

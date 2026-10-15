@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#f04b4b">
+  <title>Kalpe Budget</title>
+  <!--
+    Lanceur autonome de Kalpe, à garder sur le téléphone.
+    À chaque ouverture, il récupère la dernière version publiée sur GitHub
+    (amdou01/amdou01) et la met en cache : hors connexion, la dernière version
+    téléchargée reste utilisable. Vos données restent sur l'appareil.
+  -->
+  <style>
+    :root { --bg: #f4f4f6; --fg: #1d1d22; --muted: #8a8a94; --accent: #f04b4b; }
+    @media (prefers-color-scheme: dark) { :root { --bg: #121214; --fg: #ececf0; --muted: #8e8e99; } }
+    html, body { margin: 0; background: var(--bg); color: var(--fg);
+      font: 15px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+    #boot { min-height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center;
+      gap: 12px; padding: 24px; text-align: center; box-sizing: border-box; }
+    #boot .logo { width: 64px; height: 64px; border-radius: 16px; background: var(--accent); }
+    #boot p { margin: 0; color: var(--muted); max-width: 32ch; }
+    #boot button { font: inherit; padding: 10px 18px; border-radius: 8px; border: 0; background: var(--accent); color: #fff; }
+    .kalpe-banner { position: fixed; top: env(safe-area-inset-top, 0px); left: 0; right: 0; z-index: 50;
+      padding: 8px 16px; font-size: 13px; text-align: center; background: #3a7bd5; color: #fff; }
+    .kalpe-banner.warn { background: #b45309; }
+  </style>
+</head>
+<body>
+  <div id="boot">
+    <div class="logo" aria-hidden="true"></div>
+    <strong>Kalpe Budget</strong>
+    <p id="bootMsg">Recherche de la dernière version…</p>
+  </div>
+
+<script>
+(function () {
+  'use strict';
+  var REPO = 'amdou01/amdou01';
+  var FILES = ['index.html', 'src/styles.css', 'src/core.js', 'src/app.js'];
+  var CACHE_KEY = 'kalpe.loader.bundle';
+  var TIMEOUT = 6000;
+
+  function store(get, val) {
+    try {
+      if (get) return JSON.parse(localStorage.getItem(CACHE_KEY));
+      localStorage.setItem(CACHE_KEY, JSON.stringify(val));
+      return true;
+    } catch (e) { return null; }
+  }
+  function storageOk() {
+    try { localStorage.setItem('kalpe.probe', '1'); localStorage.removeItem('kalpe.probe'); return true; }
+    catch (e) { return false; }
+  }
+  function withTimeout(promise) {
+    return Promise.race([promise, new Promise(function (_, rej) { setTimeout(function () { rej(new Error('timeout')); }, TIMEOUT); })]);
+  }
+  function getText(url) {
+    return withTimeout(fetch(url, { cache: 'no-store' })).then(function (r) {
+      if (!r.ok) throw new Error(url + ' : ' + r.status);
+      return r.text();
+    });
+  }
+
+  // Dernier commit de la branche par défaut (immuable sur le CDN, donc à jour immédiatement).
+  function latestSha() {
+    return withTimeout(fetch('https://api.github.com/repos/' + REPO + '/commits?per_page=1', { cache: 'no-store' }))
+      .then(function (r) { if (!r.ok) throw new Error('GitHub ' + r.status); return r.json(); })
+      .then(function (list) { return list[0].sha; });
+  }
+  function download(sha) {
+    var base = 'https://cdn.jsdelivr.net/gh/' + REPO + '@' + sha + '/';
+    return Promise.all(FILES.map(function (f) { return getText(base + f); })).then(function (t) {
+      return { sha: sha, date: new Date().toISOString(), html: t[0], css: t[1], core: t[2], app: t[3] };
+    });
+  }
+
+  function banner(text, warn) {
+    var b = document.createElement('div');
+    b.className = 'kalpe-banner' + (warn ? ' warn' : '');
+    b.textContent = text;
+    document.body.appendChild(b);
+    setTimeout(function () { b.remove(); }, warn ? 8000 : 3500);
+  }
+
+  function run(bundle, note) {
+    var doc = new DOMParser().parseFromString(bundle.html, 'text/html');
+    doc.querySelectorAll('script').forEach(function (s) { s.remove(); });
+    var style = document.createElement('style');
+    style.textContent = bundle.css;
+    document.head.appendChild(style);
+    document.body.innerHTML = doc.body.innerHTML;
+    [bundle.core, bundle.app].forEach(function (code) {
+      var s = document.createElement('script');
+      s.textContent = code;
+      document.body.appendChild(s);
+    });
+    if (note) banner(note);
+    if (!storageOk()) banner('Ce mode d’ouverture ne permet pas d’enregistrer vos données. Ouvrez le fichier avec Chrome ou Safari, ou exportez régulièrement (Plus › Sauvegarder).', true);
+  }
+
+  function fail(msg) {
+    document.getElementById('bootMsg').textContent = msg;
+    var btn = document.createElement('button');
+    btn.textContent = 'Réessayer';
+    btn.onclick = function () { location.reload(); };
+    document.getElementById('boot').appendChild(btn);
+  }
+
+  var cached = store(true);
+  latestSha()
+    .then(function (sha) {
+      if (cached && cached.sha === sha) return run(cached);
+      document.getElementById('bootMsg').textContent = 'Téléchargement de la mise à jour…';
+      return download(sha).then(function (bundle) {
+        store(false, bundle);
+        run(bundle, cached ? 'Kalpe a été mis à jour (version ' + sha.slice(0, 7) + ')' : null);
+      });
+    })
+    .catch(function () {
+      if (cached) return run(cached, 'Hors connexion : version du ' + new Date(cached.date).toLocaleDateString('fr-FR'));
+      fail('Connexion nécessaire pour la première ouverture. Vérifiez votre accès à Internet.');
+    });
+})();
+</script>
+</body>
+</html>

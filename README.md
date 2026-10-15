@@ -29,4 +29,11 @@ src/app.js             interface (rendu, formulaires, navigation)
 src/styles.css         styles (clair/sombre)
 sw.js, manifest.webmanifest, icons/   PWA
 tests/core.test.js     tests unitaires
+telephone/             lanceur à installer sur le téléphone (mises à jour automatiques)
+scripts/build-artifact.py  génère l'artefact Claude depuis les mêmes sources
 ```
+
+## Sur le téléphone
+Copiez `telephone/kalpe-telephone.html` sur le téléphone et ouvrez-le avec Chrome (Android) ou Safari (iPhone).
+À chaque ouverture, il récupère la dernière version publiée ici ; hors connexion, il utilise la dernière version téléchargée.
+Les données restent sur le téléphone : pensez à faire une sauvegarde (Plus › Sauvegarder) de temps en temps.

@@ -49,6 +49,7 @@
       transactions: [],
       budgets: {},   // { categoryId: montant mensuel }
       bookmarks: [], // modèles de transactions favorites
+      bills: [],     // factures payées / à payer
     };
   }
 
@@ -256,13 +257,143 @@
       transactions: Array.isArray(raw.transactions) ? raw.transactions : [],
       budgets: raw.budgets || {},
       bookmarks: Array.isArray(raw.bookmarks) ? raw.bookmarks : [],
+      bills: Array.isArray(raw.bills) ? raw.bills : [],
     };
+  }
+
+  /** Fusionne une sauvegarde dans l'état courant (ajout sans doublon, par identifiant). */
+  function mergeState(state, incoming) {
+    const inc = migrate(incoming);
+    const out = migrate(JSON.parse(JSON.stringify(state)));
+    const addAll = (list, extra) => {
+      const ids = new Set(list.map((x) => x.id));
+      let n = 0;
+      for (const x of extra) if (!ids.has(x.id)) { list.push(x); ids.add(x.id); n++; }
+      return n;
+    };
+    addAll(out.accounts, inc.accounts);
+    addAll(out.categories.expense, inc.categories.expense);
+    addAll(out.categories.income, inc.categories.income);
+    const added = { transactions: addAll(out.transactions, inc.transactions), bills: addAll(out.bills, inc.bills) };
+    return { state: out, added };
+  }
+
+  // ---------- Factures ----------
+  const RECURRENCES = { none: 'Ponctuelle', monthly: 'Mensuelle', quarterly: 'Trimestrielle', yearly: 'Annuelle' };
+
+  /** Échéance suivante ; le jour est ramené à la fin du mois si besoin (31 janv. → 28 févr.). */
+  function nextDueDate(iso, recurrence) {
+    const step = { monthly: 1, quarterly: 3, yearly: 12 }[recurrence];
+    if (!step) return null;
+    const [y, m, d] = iso.split('-').map(Number);
+    const last = new Date(y, m - 1 + step + 1, 0).getDate();
+    return toISO(new Date(y, m - 1 + step, Math.min(d, last)));
+  }
+
+  /** 'paid' | 'overdue' (échue) | 'soon' (sous `soonDays` jours) | 'due'. */
+  function billStatus(bill, ref = today(), soonDays = 7) {
+    if (bill.paidDate) return 'paid';
+    if (bill.dueDate < ref) return 'overdue';
+    if (bill.dueDate <= addDays(ref, soonDays)) return 'soon';
+    return 'due';
+  }
+
+  function billsSummary(bills, ref = today()) {
+    const s = { toPay: 0, toPayCount: 0, overdue: 0, overdueCount: 0, soon: 0, soonCount: 0, paid: 0, paidCount: 0 };
+    for (const b of bills) {
+      const st = billStatus(b, ref);
+      if (st === 'paid') { s.paid += b.amount; s.paidCount++; continue; }
+      s.toPay += b.amount; s.toPayCount++;
+      if (st === 'overdue') { s.overdue += b.amount; s.overdueCount++; }
+      if (st === 'soon') { s.soon += b.amount; s.soonCount++; }
+    }
+    for (const k of ['toPay', 'overdue', 'soon', 'paid']) s[k] = round(s[k]);
+    return s;
+  }
+
+  /** Tri : à payer d'abord (échéance la plus proche), puis payées (plus récentes d'abord). */
+  function sortBills(bills) {
+    return [...bills].sort((a, b) => {
+      if (!!a.paidDate !== !!b.paidDate) return a.paidDate ? 1 : -1;
+      return a.paidDate ? b.paidDate.localeCompare(a.paidDate) : a.dueDate.localeCompare(b.dueDate);
+    });
+  }
+
+  function validateBill(b) {
+    const errors = [];
+    if (!(b.supplier || '').trim()) errors.push('Fournisseur requis');
+    if (!(typeof b.amount === 'number' && b.amount > 0 && isFinite(b.amount))) errors.push('Montant invalide');
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(b.dueDate || '')) errors.push('Échéance invalide');
+    if (b.paidDate && !/^\d{4}-\d{2}-\d{2}$/.test(b.paidDate)) errors.push('Date de paiement invalide');
+    if (!b.categoryId) errors.push('Catégorie requise');
+    if (!b.accountId) errors.push('Compte requis');
+    return errors;
+  }
+
+  /**
+   * Règle une facture : crée la dépense correspondante, marque la facture payée
+   * et, si elle est récurrente, prépare la prochaine échéance. Renvoie le nouvel état.
+   */
+  function payBill(state, billId, { date = today(), accountId } = {}) {
+    const bill = state.bills.find((b) => b.id === billId);
+    if (!bill || bill.paidDate) return state;
+    const tx = {
+      id: uid(), createdAt: Date.now(), type: TYPES.EXPENSE, date, amount: bill.amount,
+      accountId: accountId || bill.accountId, categoryId: bill.categoryId,
+      note: bill.supplier, description: [bill.reference && `Facture ${bill.reference}`, bill.note].filter(Boolean).join(' — '),
+      billId: bill.id,
+    };
+    const paid = { ...bill, paidDate: date, accountId: tx.accountId, txId: tx.id };
+    const bills = state.bills.map((b) => (b.id === billId ? paid : b));
+    const next = nextDueDate(bill.dueDate, bill.recurrence);
+    if (next) {
+      const { paidDate, txId, reference, ...rest } = paid;
+      bills.push({ ...rest, id: uid(), dueDate: next });
+    }
+    return { ...state, bills, transactions: [...state.transactions, tx] };
+  }
+
+  /** Annule un règlement : supprime la dépense liée et repasse la facture « à payer ». */
+  function unpayBill(state, billId) {
+    const bill = state.bills.find((b) => b.id === billId);
+    if (!bill || !bill.paidDate) return state;
+    const { paidDate, txId, ...rest } = bill;
+    return {
+      ...state,
+      bills: state.bills.map((b) => (b.id === billId ? rest : b)),
+      transactions: state.transactions.filter((t) => t.id !== txId),
+    };
+  }
+
+  // ---------- Tableau de bord ----------
+  /**
+   * Dépenses des `count` derniers mois jusqu'au mois (year, month) inclus :
+   * [{ year, month, start, end, total, byCat: { categoryId: montant } }] du plus ancien au plus récent.
+   */
+  function monthlyExpenseSeries(txs, year, month, count = 12, startDay = 1) {
+    const out = [];
+    for (let i = count - 1; i >= 0; i--) {
+      const d = new Date(year, month - i, 1);
+      const r = monthRange(d.getFullYear(), d.getMonth(), startDay);
+      const byCat = {};
+      let total = 0;
+      for (const t of filterRange(txs, r)) {
+        if (t.type !== TYPES.EXPENSE) continue;
+        byCat[t.categoryId] = (byCat[t.categoryId] || 0) + t.amount;
+        total += t.amount;
+      }
+      for (const k in byCat) byCat[k] = round(byCat[k]);
+      out.push({ year: d.getFullYear(), month: d.getMonth(), ...r, total: round(total), byCat });
+    }
+    return out;
   }
 
   return {
     TYPES, ACCOUNT_GROUPS, uid, defaultState, migrate,
     toISO, parseISO, today, addDays, monthRange, yearRange, weekStartOf, inRange,
     filterRange, totals, sortTx, groupByDay, groupByWeek, groupByMonth, byCategory,
-    accountBalances, netWorth, budgetStatus, search, validateTx, toCSV, round,
+    accountBalances, netWorth, budgetStatus, search, validateTx, toCSV, round, mergeState,
+    RECURRENCES, nextDueDate, billStatus, billsSummary, sortBills, validateBill, payBill, unpayBill,
+    monthlyExpenseSeries,
   };
 });

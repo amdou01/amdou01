@@ -6,11 +6,13 @@ Voir l'analyse : [`docs/RETRO-INGENIERIE-MONEY-MANAGER.md`](docs/RETRO-INGENIERI
 ## Fonctionnalités
 - Saisie de revenus, dépenses et transferts entre comptes (avec frais)
 - Vues **Quotidien, Calendrier, Hebdo, Mensuel, Total**
+- **Tableau de bord** sur 12 mois glissants : indicateurs, barres empilées par catégorie, détail filtrable
+- **Factures** à payer / payées : échéances, retards, récurrence ; « Payer » crée la dépense et la prochaine échéance
 - **Statistiques** par catégorie (anneau + tendance sur 6 mois)
 - **Budgets** mensuels par catégorie
 - **Comptes** : soldes, actifs / passifs, patrimoine net
 - Recherche, favoris, copie de transaction, saisie en rafale
-- Export CSV (Excel FR), sauvegarde/restauration JSON
+- Export CSV (Excel FR), sauvegarde/restauration JSON, import par ajout sans doublons
 - Hors ligne, installable sur téléphone, mode sombre — données stockées localement
 
 ## Lancer
@@ -37,3 +39,7 @@ scripts/build-artifact.py  génère l'artefact Claude depuis les mêmes sources
 Copiez `telephone/kalpe-telephone.html` sur le téléphone et ouvrez-le avec Chrome (Android) ou Safari (iPhone).
 À chaque ouverture, il récupère la dernière version publiée ici ; hors connexion, il utilise la dernière version téléchargée.
 Les données restent sur le téléphone : pensez à faire une sauvegarde (Plus › Sauvegarder) de temps en temps.
+
+Une copie personnelle du lanceur peut embarquer une sauvegarde dans le bloc `<script id="kalpe-seed">` :
+elle est ajoutée sans doublon à la première ouverture (une fois par `seedId`). Ces copies contiennent des
+données réelles : elles ne doivent jamais être commitées dans ce dépôt public.

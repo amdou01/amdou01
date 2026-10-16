@@ -7,6 +7,8 @@
   <title>Kalpe Budget</title>
   <!--
     Lanceur autonome de Kalpe, à garder sur le téléphone.
+    Un bloc <script id="kalpe-seed" type="application/json"> peut contenir une sauvegarde Kalpe :
+    elle est ajoutée (sans doublon) une seule fois par valeur de « seedId ».
     À chaque ouverture, il récupère la dernière version publiée sur GitHub
     (amdou01/amdou01) et la met en cache : hors connexion, la dernière version
     téléchargée reste utilisable. Vos données restent sur l'appareil.
@@ -33,6 +35,7 @@
     <p id="bootMsg">Recherche de la dernière version…</p>
   </div>
 
+<script id="kalpe-seed" type="application/json"></script>
 <script>
 (function () {
   'use strict';
@@ -81,6 +84,12 @@
     b.textContent = text;
     document.body.appendChild(b);
     setTimeout(function () { b.remove(); }, warn ? 8000 : 3500);
+  }
+
+  // Données personnelles éventuellement jointes à ce fichier (jamais publiées sur GitHub).
+  var seedEl = document.getElementById('kalpe-seed');
+  if (seedEl && seedEl.textContent.trim()) {
+    try { window.KALPE_SEED = JSON.parse(seedEl.textContent); } catch (e) { /* données ignorées */ }
   }
 
   function run(bundle, note) {

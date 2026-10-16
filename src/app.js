@@ -13,7 +13,7 @@
   let state = load();
   const now = new Date();
   const ui = {
-    view: 'trans', transTab: 'daily', statsTab: 'expense',
+    view: 'trans', transTab: 'daily', statsTab: 'dash', billsTab: 'due', dashSel: null, dashQ: '', dashCat: '',
     year: now.getFullYear(), month: now.getMonth(), selDay: C.today(),
   };
 
@@ -105,12 +105,32 @@
     document.querySelectorAll('#bottomNav button').forEach((b) => b.classList.toggle('active', b.dataset.view === ui.view));
     document.querySelectorAll('#transTabs button').forEach((b) => b.classList.toggle('active', b.dataset.tab === ui.transTab));
     document.querySelectorAll('#statsTabs button').forEach((b) => b.classList.toggle('active', b.dataset.tab === ui.statsTab));
+    document.querySelectorAll('#billsTabs button').forEach((b) => b.classList.toggle('active', b.dataset.tab === ui.billsTab));
     const yearly = ui.view === 'trans' && ui.transTab === 'monthly';
-    $('#periodLabel').textContent = yearly ? String(ui.year) : `${MONTHS[ui.month]} ${ui.year}`;
+    const dash = ui.view === 'stats' && ui.statsTab === 'dash';
+    const first = new Date(ui.year, ui.month - 11, 1);
+    $('#periodLabel').textContent = yearly ? String(ui.year)
+      : dash ? `${MONTHS[first.getMonth()]} ${String(first.getFullYear()).slice(2)} – ${MONTHS[ui.month]} ${String(ui.year).slice(2)}`
+      : ui.view === 'bills' ? 'Factures' : `${MONTHS[ui.month]} ${ui.year}`;
     const showNav = ui.view === 'trans' || ui.view === 'stats';
     ['#prevPeriod', '#nextPeriod'].forEach((s) => $(s).style.visibility = showNav ? 'visible' : 'hidden');
     $('#addBtn').classList.toggle('hidden', ui.view === 'more');
-    ({ trans: renderTrans, stats: renderStats, accounts: renderAccounts, more: renderMore })[ui.view]();
+    $('#addBtn').setAttribute('aria-label', ui.view === 'bills' ? 'Ajouter une facture' : ui.view === 'accounts' ? 'Ajouter un compte' : 'Ajouter une transaction');
+    const bs = C.billsSummary(state.bills);
+    const urgent = bs.overdueCount + bs.soonCount;
+    $('#billsBadge').textContent = urgent;
+    $('#billsBadge').classList.toggle('hidden', !urgent);
+    ({ trans: renderTrans, stats: renderStats, bills: renderBills, accounts: renderAccounts, more: renderMore })[ui.view]();
+  }
+
+  /** Rappel en tête des transactions quand des factures sont échues ou proches. */
+  function billsAlertHTML() {
+    const bs = C.billsSummary(state.bills);
+    if (!bs.overdueCount && !bs.soonCount) return '';
+    const parts = [];
+    if (bs.overdueCount) parts.push(`<b>${bs.overdueCount} en retard</b> (${money(bs.overdue)})`);
+    if (bs.soonCount) parts.push(`${bs.soonCount} à payer sous 7 jours (${money(bs.soon)})`);
+    return `<button class="alert ${bs.overdueCount ? 'late' : ''}" data-action="go-bills">🧾 Factures : ${parts.join(' · ')} ›</button>`;
   }
 
   // ----- Transactions -----
@@ -132,8 +152,8 @@
 
     if (ui.transTab === 'daily') {
       const groups = C.groupByDay(txs);
-      out.innerHTML = groups.length ? groups.map(dayCardHTML).join('')
-        : `<div class="empty">Aucune transaction ce mois-ci.<br>Appuyez sur « + » pour commencer.</div>`;
+      out.innerHTML = billsAlertHTML() + (groups.length ? groups.map(dayCardHTML).join('')
+        : `<div class="empty">Aucune transaction ce mois-ci.<br>Appuyez sur « + » pour commencer.</div>`);
     } else if (ui.transTab === 'calendar') {
       out.innerHTML = calendarHTML(txs) + dayDetailHTML(txs);
     } else if (ui.transTab === 'weekly') {
@@ -209,6 +229,7 @@
   function renderStats() {
     const out = $('#statsContent');
     if (ui.statsTab === 'budget') return renderBudget(out);
+    if (ui.statsTab === 'dash') return renderDashboard(out);
     const type = ui.statsTab;
     const txs = monthTx();
     const rows = C.byCategory(txs, type);
@@ -272,6 +293,142 @@
       }).join('')}</div>`;
   }
 
+  // ----- Tableau de bord (12 mois glissants) -----
+  function renderDashboard(out) {
+    const series = C.monthlyExpenseSeries(state.transactions, ui.year, ui.month, 12, state.settings.monthStartDay);
+    const range = { start: series[0].start, end: series.at(-1).end };
+    const txs = C.filterRange(state.transactions, range).filter((t) => t.type === TYPES.EXPENSE);
+    if (!txs.length) {
+      out.innerHTML = `<div class="empty">Aucune dépense sur ces 12 mois.<br>Ajoutez des transactions ou importez une sauvegarde (Plus › Importer).</div>`;
+      return;
+    }
+    const cats = C.byCategory(txs, TYPES.EXPENSE);
+    const total = cats.reduce((s, c) => s + c.amount, 0);
+    // 5 catégories principales + « Autres » pour garder le graphique lisible.
+    const top = cats.slice(0, 5).map((c) => c.categoryId);
+    const color = (id) => { const i = top.indexOf(id); return i < 0 ? PALETTE[10] : PALETTE[i]; };
+    const keys = [...top, '_other'];
+    const stack = series.map((m) => {
+      const v = Object.fromEntries(keys.map((k) => [k, 0]));
+      for (const [id, a] of Object.entries(m.byCat)) v[top.includes(id) ? id : '_other'] += a;
+      return { ...m, v };
+    });
+    const months = series.filter((m) => m.total > 0).length || 1;
+    const peak = series.reduce((a, b) => (b.total > a.total ? b : a));
+    const bs = C.billsSummary(state.bills);
+    const sel = series.find((m) => m.start === ui.dashSel) || series.at(-1);
+    const selRows = Object.entries(sel.byCat).sort((a, b) => b[1] - a[1]);
+
+    const W = 340, H = 170, pl = 4, pb = 18, bw = (W - pl) / 12;
+    const max = Math.max(1, ...series.map((m) => m.total));
+    const bars = stack.map((m, i) => {
+      let y = H - pb;
+      const segs = keys.map((k) => {
+        const h = (m.v[k] / max) * (H - pb - 8);
+        if (!h) return '';
+        y -= h;
+        return `<rect x="${pl + i * bw + 3}" y="${y}" width="${bw - 6}" height="${h}" fill="${k === '_other' ? PALETTE[10] : color(k)}"/>`;
+      }).join('');
+      const on = m.start === sel.start;
+      return `<g class="dbar${on ? ' on' : ''}" data-dash="${m.start}" role="button" tabindex="0" aria-label="${MONTHS[m.month]} ${m.year} : ${esc(money(m.total))}">
+        <rect x="${pl + i * bw}" y="0" width="${bw}" height="${H}" fill="transparent"/>${segs}
+        <text x="${pl + i * bw + bw / 2}" y="${H - 4}" text-anchor="middle" font-size="9" fill="${on ? 'var(--text)' : 'var(--muted)'}"${on ? ' font-weight="700"' : ''}>${MONTHS[m.month].slice(0, 3)}</text></g>`;
+    }).join('');
+    const legend = keys.filter((k) => k !== '_other' || cats.length > 5).map((k) => `<span><i style="background:${k === '_other' ? PALETTE[10] : color(k)}"></i>${k === '_other' ? 'Autres' : esc(catLabel(k))}</span>`).join('');
+
+    const q = ui.dashQ.trim();
+    let list = q ? C.search(txs, q, state) : C.sortTx(txs);
+    if (ui.dashCat) list = list.filter((t) => t.categoryId === ui.dashCat);
+    const listSum = list.reduce((s, t) => s + t.amount, 0);
+
+    out.innerHTML = `
+      <div class="kpis">
+        <div><span>Dépenses 12 mois</span><b class="num">${money(total)}</b></div>
+        <div><span>Moyenne / mois</span><b class="num">${money(C.round(total / months))}</b></div>
+        <div><span>Mois le plus élevé</span><b class="num">${money(peak.total)}</b><small>${MONTHS[peak.month]} ${peak.year}</small></div>
+        <button data-action="go-bills" class="${bs.overdueCount ? 'late' : ''}"><span>Factures à payer</span><b class="num">${money(bs.toPay)}</b>
+          <small>${bs.toPayCount} facture(s)${bs.overdueCount ? ` · ${bs.overdueCount} en retard` : ''}</small></button>
+      </div>
+      <div class="section-title">Dépenses par mois — touchez un mois</div>
+      <div class="card dchart"><svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Dépenses mensuelles empilées par catégorie">${bars}</svg>
+        <div class="dlegend">${legend}</div></div>
+      <div class="section-title">${MONTHS[sel.month]} ${sel.year} · ${money(sel.total)}</div>
+      <div class="card">${selRows.length ? selRows.map(([id, a]) => `<button class="row" data-dashmonth="${sel.start}" data-dashcat="${id}">
+        <span>${esc(catLabel(id))}</span><span class="right num">${money(a)}</span></button>`).join('') : '<div class="row muted">Aucune dépense ce mois-ci.</div>'}</div>
+      <div class="section-title">Par catégorie sur 12 mois</div>
+      <div class="card">${cats.map((c) => `<button class="row" data-dashfilter="${c.categoryId}" style="display:block">
+        <div style="display:flex"><span>${esc(catLabel(c.categoryId))}</span><span class="right num">${money(c.amount)} <span class="muted">${Math.round(c.pct)} %</span></span></div>
+        <div class="bar"><i style="width:${(c.amount / cats[0].amount) * 100}%;background:${color(c.categoryId)}"></i></div></button>`).join('')}</div>
+      <div class="section-title">Détail des dépenses</div>
+      <div class="card" style="padding:8px 16px;display:flex;gap:8px">
+        <input class="search-input" id="dashQ" placeholder="Rechercher (fournisseur, note…)" value="${esc(ui.dashQ)}">
+        <select class="search-input" id="dashCat" style="max-width:42%"><option value="">Toutes catégories</option>
+          ${cats.map((c) => `<option value="${c.categoryId}" ${c.categoryId === ui.dashCat ? 'selected' : ''}>${esc(catLabel(c.categoryId))}</option>`).join('')}</select>
+      </div>
+      <div class="card" id="dashList"><div class="row muted">${list.length} dépense(s) · <span class="expense num">${money(listSum)}</span></div>
+        ${list.slice(0, 300).map((t) => txRowHTML(t, true)).join('')}</div>`;
+    const qi = $('#dashQ');
+    qi.oninput = () => {
+      ui.dashQ = qi.value; const pos = qi.selectionStart;
+      renderDashboard(out); const n = $('#dashQ'); n.focus(); n.setSelectionRange(pos, pos);
+    };
+    $('#dashCat').onchange = (e) => { ui.dashCat = e.target.value; renderDashboard(out); };
+  }
+
+  // ----- Factures -----
+  function billDueLabel(b) {
+    const st = C.billStatus(b);
+    if (st === 'paid') return `<span class="pill paid">Payée le ${shortDate(b.paidDate)}</span>`;
+    const days = Math.round((C.parseISO(b.dueDate) - C.parseISO(C.today())) / 864e5);
+    if (st === 'overdue') return `<span class="pill late">En retard de ${-days} j</span>`;
+    if (days === 0) return `<span class="pill soon">Aujourd’hui</span>`;
+    return `<span class="pill ${st}">${st === 'soon' ? `Dans ${days} j` : `Le ${shortDate(b.dueDate)}`}</span>`;
+  }
+
+  function billRowHTML(b) {
+    const rec = b.recurrence && b.recurrence !== 'none' ? ` · 🔁 ${C.RECURRENCES[b.recurrence].toLowerCase()}` : '';
+    return `<div class="bill">
+      <button class="bill-main" data-bill="${b.id}">
+        <span class="note"><div><b>${esc(b.supplier)}</b></div>
+          <div class="muted">${esc(catLabel(b.categoryId))} · éch. ${shortDate(b.dueDate)}/${b.dueDate.slice(2, 4)}${rec}${b.reference ? ` · n° ${esc(b.reference)}` : ''}</div></span>
+        <span class="right"><div class="num ${b.paidDate ? '' : 'expense'}">${money(b.amount)}</div>${billDueLabel(b)}</span>
+      </button>
+      ${b.paidDate ? '' : `<button class="btn primary pay" data-paybill="${b.id}">Payer</button>`}
+    </div>`;
+  }
+
+  function renderBills() {
+    const s = C.billsSummary(state.bills);
+    $('#billsSummary').innerHTML = `<div class="expense">À payer<b class="num">${money(s.toPay)}</b><small>${s.toPayCount} facture(s)</small></div>
+      <div class="${s.overdueCount ? 'expense' : ''}">En retard<b class="num">${money(s.overdue)}</b><small>${s.overdueCount} facture(s)</small></div>
+      <div class="income">Payées<b class="num">${money(s.paid)}</b><small>${s.paidCount} facture(s)</small></div>`;
+    const sorted = C.sortBills(state.bills);
+    const list = sorted.filter((b) => ui.billsTab === 'all' || (ui.billsTab === 'paid' ? b.paidDate : !b.paidDate));
+    const out = $('#billsContent');
+    if (!list.length) {
+      out.innerHTML = `<div class="empty">${ui.billsTab === 'paid' ? 'Aucune facture payée enregistrée.' : 'Aucune facture à payer.'}<br>
+        Appuyez sur « + » pour ajouter une facture (à payer ou déjà payée).</div>`;
+      return;
+    }
+    if (ui.billsTab === 'paid') {
+      // Regroupées par mois de paiement.
+      const groups = new Map();
+      for (const b of list) { const k = b.paidDate.slice(0, 7); if (!groups.has(k)) groups.set(k, []); groups.get(k).push(b); }
+      out.innerHTML = [...groups.entries()].map(([k, bills]) => {
+        const [y, m] = k.split('-').map(Number);
+        return `<div class="section-title" style="display:flex">${MONTHS[m - 1]} ${y}<span class="num" style="margin-left:auto">${money(bills.reduce((a, b) => a + b.amount, 0))}</span></div>
+          <div class="card">${bills.map(billRowHTML).join('')}</div>`;
+      }).join('');
+      return;
+    }
+    const sections = ui.billsTab === 'all' ? [['À payer', list.filter((b) => !b.paidDate)], ['Payées', list.filter((b) => b.paidDate)]]
+      : [['En retard', list.filter((b) => C.billStatus(b) === 'overdue')], ['Sous 7 jours', list.filter((b) => C.billStatus(b) === 'soon')],
+        ['Plus tard', list.filter((b) => C.billStatus(b) === 'due')]];
+    out.innerHTML = sections.filter(([, l]) => l.length).map(([title, l]) => `<div class="section-title" style="display:flex">${title}
+      <span class="num" style="margin-left:auto">${money(l.reduce((a, b) => a + b.amount, 0))}</span></div>
+      <div class="card">${l.map(billRowHTML).join('')}</div>`).join('');
+  }
+
   // ----- Comptes -----
   function renderAccounts() {
     const nw = C.netWorth(state);
@@ -315,7 +472,8 @@
       <div class="card">
         <button class="row" data-action="export-csv-all">📤 Exporter tout en CSV (Excel)</button>
         <button class="row" data-action="backup">💾 Sauvegarder (JSON)</button>
-        <button class="row" data-action="restore">📥 Restaurer une sauvegarde</button>
+        <button class="row" data-action="merge">➕ Importer et ajouter (sans doublons)</button>
+        <button class="row" data-action="restore">📥 Restaurer une sauvegarde (remplace tout)</button>
         <button class="row" data-action="demo">🧪 Charger des données de démonstration</button>
         <button class="row expense" data-action="reset">🗑️ Réinitialiser toutes les données</button>
       </div>
@@ -407,6 +565,8 @@
           ask('Supprimer cette transaction ?', 'Supprimer').then((ok) => {
             if (!ok) return;
             state.transactions = state.transactions.filter((x) => x.id !== t.id);
+            // Une facture réglée par cette dépense redevient « à payer ».
+            state.bills = state.bills.map((b) => { if (b.txId !== t.id) return b; const { paidDate, txId, ...rest } = b; return rest; });
             save(); render(); closeModal(); toast('Transaction supprimée');
           });
         } else if (act === 'copy') {
@@ -552,6 +712,103 @@
     openModal(catLabel(catId), `<div class="card">${txs.map((t) => txRowHTML(t, true)).join('')}</div>` + trendHTML(type, catId));
   }
 
+  function billForm(bill) {
+    const editing = !!(bill && state.bills.some((x) => x.id === bill.id));
+    const factures = state.categories.expense.find((c) => /factur/i.test(c.name)) || state.categories.expense[0];
+    const b = { supplier: '', amount: '', dueDate: C.today(), categoryId: factures?.id, accountId: state.accounts[0]?.id, recurrence: 'none', ...bill };
+    let paid = !!b.paidDate;
+    const suppliers = [...new Set([...state.bills.map((x) => x.supplier), ...state.transactions.filter((t) => t.type === TYPES.EXPENSE).map((t) => t.note)].filter(Boolean))].sort();
+    const accOpts = state.accounts.map((a) => `<option value="${a.id}" ${a.id === b.accountId ? 'selected' : ''}>${esc(a.name)}</option>`).join('');
+    const catOpts = state.categories.expense.map((c) => `<option value="${c.id}" ${c.id === b.categoryId ? 'selected' : ''}>${c.icon} ${esc(c.name)}</option>`).join('');
+    const draw = () => `
+      ${editing ? '' : `<div class="seg two"><button type="button" data-paid="0" class="${paid ? '' : 'on'}">À payer</button><button type="button" data-paid="1" class="${paid ? 'on' : ''}">Déjà payée</button></div>`}
+      <form id="billForm" autocomplete="off">
+        <div class="field"><label>Fournisseur</label><input name="supplier" list="supplierList" value="${esc(b.supplier)}" maxlength="60" placeholder="ex. Senelec, Orange, loyer" required></div>
+        <datalist id="supplierList">${suppliers.slice(0, 200).map((x) => `<option value="${esc(x)}">`).join('')}</datalist>
+        <div class="field"><label>Montant</label><input type="text" name="amount" inputmode="decimal" value="${b.amount ?? ''}" placeholder="0" required></div>
+        <div class="field"><label>Échéance</label><input type="date" name="dueDate" value="${b.dueDate}" required></div>
+        ${paid ? `<div class="field"><label>Payée le</label><input type="date" name="paidDate" value="${b.paidDate || C.today()}" required></div>` : ''}
+        <div class="field"><label>Catégorie</label><select name="categoryId">${catOpts}</select></div>
+        <div class="field"><label>Compte</label><select name="accountId">${accOpts}</select></div>
+        <div class="field"><label>Récurrence</label><select name="recurrence">${Object.entries(C.RECURRENCES).map(([k, v]) => `<option value="${k}" ${k === (b.recurrence || 'none') ? 'selected' : ''}>${v}</option>`).join('')}</select></div>
+        <div class="field"><label>N° facture</label><input name="reference" value="${esc(b.reference)}" maxlength="40" placeholder="facultatif"></div>
+        <div class="field"><label>Note</label><input name="note" value="${esc(b.note)}" maxlength="120" placeholder="facultatif"></div>
+        <div class="errors" id="formErrors"></div>
+        <div class="actions"><button class="btn primary" type="submit">Enregistrer</button></div>
+        ${editing ? `<div class="actions">
+          ${b.paidDate ? '<button class="btn" type="button" data-act="unpay">Annuler le paiement</button>' : '<button class="btn" type="button" data-act="pay">Marquer payée</button>'}
+          <button class="btn danger" type="button" data-act="delete">Supprimer</button></div>
+          ${b.paidDate ? '<p class="muted">Facture payée : la dépense liée est dans vos transactions et suit les modifications.</p>' : ''}` : ''}
+      </form>`;
+    const read = (form) => {
+      const f = Object.fromEntries(new FormData(form));
+      return { ...b, ...f, supplier: (f.supplier || '').trim(), amount: num(f.amount) };
+    };
+    const mount = (root) => {
+      root.querySelectorAll('[data-paid]').forEach((x) => x.onclick = () => {
+        Object.assign(b, read(root.querySelector('#billForm')));
+        paid = x.dataset.paid === '1';
+        root.querySelector('.modal-body').innerHTML = draw(); mount(root);
+      });
+      const form = root.querySelector('#billForm');
+      if (!editing) setTimeout(() => form.supplier.focus(), 50);
+      form.onsubmit = (e) => {
+        e.preventDefault();
+        const data = read(form);
+        // Nouvelle facture « déjà payée » : la date de paiement est posée par payBill (qui crée la dépense).
+        delete data.paidDate;
+        if (editing && b.paidDate) data.paidDate = form.paidDate.value;
+        const errs = C.validateBill(paid && !editing ? { ...data, paidDate: form.paidDate.value } : data);
+        if (errs.length) { root.querySelector('#formErrors').textContent = errs.join(' · '); return; }
+        if (editing) {
+          state.bills = state.bills.map((x) => (x.id === data.id ? data : x));
+          const tx = data.txId && state.transactions.find((t) => t.id === data.txId);
+          if (tx) Object.assign(tx, { amount: data.amount, accountId: data.accountId, categoryId: data.categoryId, note: data.supplier, date: data.paidDate });
+          toast('Facture modifiée');
+        } else {
+          const nb = { ...data, id: C.uid(), createdAt: Date.now() };
+          state.bills.push(nb);
+          if (paid) state = C.payBill(state, nb.id, { date: form.paidDate.value });
+          toast(paid ? 'Facture payée ajoutée (dépense créée)' : 'Facture à payer ajoutée');
+        }
+        save(); render(); closeModal();
+      };
+      root.querySelectorAll('[data-act]').forEach((x) => x.onclick = () => {
+        const act = x.dataset.act;
+        if (act === 'pay') payModal(b.id);
+        else if (act === 'unpay') ask('Annuler ce paiement ? La dépense liée sera supprimée.', 'Annuler le paiement').then((ok) => {
+          if (!ok) return;
+          state = C.unpayBill(state, b.id); save(); render(); closeModal(); toast('Paiement annulé');
+        });
+        else if (act === 'delete') ask(b.paidDate ? 'Supprimer cette facture ? La dépense déjà enregistrée reste dans vos transactions.' : 'Supprimer cette facture ?', 'Supprimer').then((ok) => {
+          if (!ok) return;
+          state.bills = state.bills.filter((y) => y.id !== b.id); save(); render(); closeModal(); toast('Facture supprimée');
+        });
+      });
+    };
+    openModal(editing ? b.supplier : 'Nouvelle facture', draw(), mount);
+  }
+
+  function payModal(billId) {
+    const b = state.bills.find((x) => x.id === billId);
+    if (!b) return;
+    const accOpts = state.accounts.map((a) => `<option value="${a.id}" ${a.id === b.accountId ? 'selected' : ''}>${esc(a.name)}</option>`).join('');
+    const next = C.nextDueDate(b.dueDate, b.recurrence);
+    openModal(`Payer — ${b.supplier}`, `<form id="payForm">
+      <p style="text-align:center;font-size:22px;font-weight:700;margin:8px 0" class="num expense">${money(b.amount)}</p>
+      <div class="field"><label>Payée le</label><input type="date" name="date" value="${C.today()}" required></div>
+      <div class="field"><label>Compte</label><select name="accountId">${accOpts}</select></div>
+      <p class="muted">Une dépense « ${esc(b.supplier)} » sera ajoutée à vos transactions.${next ? ` Prochaine échéance créée pour le ${shortDate(next)}/${next.slice(0, 4)}.` : ''}</p>
+      <div class="actions"><button class="btn primary" type="submit">Confirmer le paiement</button></div></form>`, (root) => {
+      root.querySelector('#payForm').onsubmit = (e) => {
+        e.preventDefault();
+        const f = Object.fromEntries(new FormData(e.target));
+        state = C.payBill(state, billId, { date: f.date, accountId: f.accountId });
+        save(); render(); closeModal(); toast('Facture payée');
+      };
+    });
+  }
+
   // ---------- Fichiers ----------
   function download(name, content, mime) {
     if (window.KALPE_EMBED) return showExport(name, content);
@@ -572,17 +829,42 @@
     });
   }
 
-  function restore() {
+  function restore(merge) {
     const input = Object.assign(document.createElement('input'), { type: 'file', accept: '.json,application/json' });
     input.onchange = async () => {
       try {
         const data = JSON.parse(await input.files[0].text());
         if (!Array.isArray(data.transactions) || !Array.isArray(data.accounts)) throw new Error('format');
+        if (merge) return importData(data);
         if (!(await ask('Remplacer toutes les données actuelles par cette sauvegarde ?', 'Remplacer'))) return;
         state = C.migrate(data); save(); render(); toast('Sauvegarde restaurée');
       } catch { toast('Fichier de sauvegarde invalide'); }
     };
     input.click();
+  }
+
+  /** Ajoute des données sans doublon. Sur un appareil vierge, reprend aussi comptes, catégories et réglages. */
+  function importData(data) {
+    const blank = !state.transactions.length && !state.bills.length;
+    let added;
+    if (blank) {
+      state = C.migrate(data);
+      added = { transactions: state.transactions.length, bills: state.bills.length };
+    } else {
+      ({ state, added } = C.mergeState(state, data));
+    }
+    save(); render();
+    toast(`${added.transactions} transaction(s) et ${added.bills} facture(s) ajoutées`);
+    return added;
+  }
+
+  /** Données jointes au fichier téléphone personnel : importées une seule fois par version. */
+  function applySeed() {
+    const seed = window.KALPE_SEED;
+    if (!seed || !Array.isArray(seed.transactions)) return;
+    const key = `kalpe.seed.${seed.seedId || 'default'}`;
+    try { if (localStorage.getItem(key)) return; localStorage.setItem(key, C.today()); } catch { return; }
+    importData(seed);
   }
 
   async function loadDemo(silent) {
@@ -605,6 +887,15 @@
       }
     }
     state.budgets[ex[0].id] = 400; state.budgets[ex[2].id] = 150;
+    const fact = ex.find((c) => /factur/i.test(c.name)) || ex[0];
+    const acc = state.accounts[1]?.id || state.accounts[0].id;
+    const t0 = C.today();
+    [['Électricité', 64.9, -3, 'monthly'], ['Internet & mobile', 39.99, 4, 'monthly'], ['Assurance', 420, 25, 'yearly'], ['Hébergement web', 12, -20, 'monthly']]
+      .forEach(([supplier, amount, days, recurrence], i) => {
+        const id = C.uid();
+        state.bills.push({ id, supplier, amount, dueDate: C.addDays(t0, days), categoryId: fact.id, accountId: acc, recurrence, createdAt: Date.now() + i });
+        if (i === 3) state = C.payBill(state, id, { date: C.addDays(t0, days) });
+      });
     save(); render(); if (!silent) toast('Données de démonstration chargées');
   }
 
@@ -612,23 +903,37 @@
   $('#bottomNav').onclick = (e) => { const b = e.target.closest('button'); if (b) { ui.view = b.dataset.view; render(); } };
   $('#transTabs').onclick = (e) => { const b = e.target.closest('button'); if (b) { ui.transTab = b.dataset.tab; render(); } };
   $('#statsTabs').onclick = (e) => { const b = e.target.closest('button'); if (b) { ui.statsTab = b.dataset.tab; render(); } };
+  $('#billsTabs').onclick = (e) => { const b = e.target.closest('button'); if (b) { ui.billsTab = b.dataset.tab; render(); } };
+  document.body.addEventListener('keydown', (e) => {
+    const g = e.target.closest?.('[data-dash]');
+    if (g && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); ui.dashSel = g.dataset.dash; render(); }
+  });
   function shift(dir) {
     if (ui.view === 'trans' && ui.transTab === 'monthly') ui.year += dir;
     else { const d = new Date(ui.year, ui.month + dir, 1); ui.year = d.getFullYear(); ui.month = d.getMonth(); }
+    ui.dashSel = null;
     render();
   }
   $('#prevPeriod').onclick = () => shift(-1);
   $('#nextPeriod').onclick = () => shift(1);
-  $('#addBtn').onclick = () => ui.view === 'accounts' ? accountModal() : txForm();
+  $('#addBtn').onclick = () => ui.view === 'accounts' ? accountModal() : ui.view === 'bills' ? billForm() : txForm();
   $('#searchBtn').onclick = searchModal;
   $('#bookmarkBtn').onclick = bookmarksModal;
 
   // Délégation globale pour les éléments générés.
   document.body.addEventListener('click', (e) => {
-    const el = e.target.closest('[data-tx],[data-day],[data-month],[data-account],[data-budget],[data-statcat],[data-action]');
+    const el = e.target.closest('[data-tx],[data-day],[data-month],[data-account],[data-budget],[data-statcat],[data-action],[data-bill],[data-paybill],[data-dash],[data-dashfilter],[data-dashcat]');
     if (!el) return;
     const d = el.dataset;
-    if (d.tx) { const t = state.transactions.find((x) => x.id === d.tx); if (t) txForm({ ...t }); }
+    if (d.paybill) payModal(d.paybill);
+    else if (d.bill) { const b = state.bills.find((x) => x.id === d.bill); if (b) billForm({ ...b }); }
+    else if (d.dash) { ui.dashSel = d.dash; render(); }
+    else if (d.dashfilter) { ui.dashCat = d.dashfilter; ui.dashQ = ''; render(); $('#dashList')?.scrollIntoView({ behavior: 'smooth' }); }
+    else if (d.dashcat) {
+      const p = C.parseISO(d.dashmonth); ui.year = p.getFullYear(); ui.month = p.getMonth();
+      ui.view = 'stats'; ui.statsTab = 'expense'; render(); categoryDetailModal(d.dashcat);
+    }
+    else if (d.tx) { const t = state.transactions.find((x) => x.id === d.tx); if (t) txForm({ ...t }); }
     else if (d.day) {
       if (ui.selDay === d.day) return txForm({ date: d.day });
       ui.selDay = d.day;
@@ -646,7 +951,8 @@
         'export-csv': () => download(`kalpe-${ui.year}-${pad(ui.month + 1)}.csv`, C.toCSV({ ...state, transactions: monthTx() }), 'text/csv;charset=utf-8'),
         'export-csv-all': () => download(`kalpe-${stamp}.csv`, C.toCSV(state), 'text/csv;charset=utf-8'),
         backup: () => download(`kalpe-sauvegarde-${stamp}.json`, JSON.stringify(state, null, 2), 'application/json'),
-        restore, demo: () => loadDemo(false), bookmarks: bookmarksModal,
+        restore: () => restore(false), merge: () => restore(true), demo: () => loadDemo(false), bookmarks: bookmarksModal,
+        'go-bills': () => { ui.view = 'bills'; ui.billsTab = 'due'; render(); window.scrollTo(0, 0); },
         'add-account': () => accountModal(),
         'cats-expense': () => categoriesModal('expense'),
         'cats-income': () => categoriesModal('income'),
@@ -671,6 +977,7 @@
     navigator.serviceWorker.register('sw.js').catch(() => {});
   }
 
+  applySeed();
   render();
   // Première ouverture de la version de démonstration : données d'exemple pour montrer l'outil.
   if (window.KALPE_EMBED && !state.transactions.length) loadDemo(true);

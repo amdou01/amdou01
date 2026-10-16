@@ -37,11 +37,23 @@
   <!-- Onglet Statistiques -->
   <section class="view hidden" id="view-stats">
     <nav class="subtabs" id="statsTabs">
-      <button data-tab="expense" class="active">Dépenses</button>
+      <button data-tab="dash" class="active">Tableau de bord</button>
+      <button data-tab="expense">Dépenses</button>
       <button data-tab="income">Revenus</button>
       <button data-tab="budget">Budget</button>
     </nav>
     <div class="content" id="statsContent"></div>
+  </section>
+
+  <!-- Onglet Factures -->
+  <section class="view hidden" id="view-bills">
+    <nav class="subtabs" id="billsTabs">
+      <button data-tab="due" class="active">À payer</button>
+      <button data-tab="paid">Payées</button>
+      <button data-tab="all">Toutes</button>
+    </nav>
+    <div class="summary" id="billsSummary"></div>
+    <div class="content" id="billsContent"></div>
   </section>
 
   <!-- Onglet Comptes -->
@@ -60,6 +72,7 @@
   <nav class="bottomnav" id="bottomNav">
     <button data-view="trans" class="active"><span>📒</span>Transactions</button>
     <button data-view="stats"><span>📊</span>Stats</button>
+    <button data-view="bills"><span>🧾</span>Factures<i class="nav-badge hidden" id="billsBadge"></i></button>
     <button data-view="accounts"><span>💳</span>Comptes</button>
     <button data-view="more"><span>⋯</span>Plus</button>
   </nav>
